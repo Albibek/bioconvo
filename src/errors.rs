@@ -1,0 +1,38 @@
+use failure_derive::Fail;
+use std::net::SocketAddr;
+
+#[derive(Fail, Debug)]
+pub enum GeneralError {
+    #[fail(display = "I/O error")]
+    Io(#[cause] ::std::io::Error),
+
+    #[fail(display = "Error when creating timer: {}", _0)]
+    Timer(#[cause] ::tokio::timer::Error),
+
+    #[fail(display = "getting system time")]
+    Time(#[cause] ::std::time::SystemTimeError),
+
+    #[fail(display = "Gave up connecting to {}", _0)]
+    TcpOutOfTries(SocketAddr),
+
+    #[fail(display = "Carbon server failure")]
+    CarbonServer,
+
+    #[fail(display = "Carbon backend failure")]
+    CarbonBackend,
+
+    #[fail(display = "future send error")]
+    FutureSend,
+
+    #[fail(display = "metric too long")]
+    MetricTooLong,
+
+    #[fail(display = "bad metric: {}", _0)]
+    Parsing(&'static str),
+}
+
+impl From<std::io::Error> for GeneralError {
+    fn from(e: std::io::Error) -> Self {
+        GeneralError::Io(e)
+    }
+}

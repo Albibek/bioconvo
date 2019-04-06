@@ -34,6 +34,15 @@ pub struct System {
 
     /// Prefix to send own metrics with
     pub stats_prefix: String,
+
+    /// main file with lua code
+    pub code: String,
+
+    /// list of backends configuration
+    pub backends: HashMap<String, Backend>,
+
+    /// list of buckets configuration
+    pub buckets: HashMap<String, Bucket>,
 }
 
 impl Default for System {
@@ -45,6 +54,9 @@ impl Default for System {
             task_queue_size: 2048,
             stats_interval: 10000,
             stats_prefix: "resources.monitoring.bioyino".to_string(),
+            code: "bioconvo.lua".to_string(),
+            backends: HashMap::new(),
+            buckets: HashMap::new(),
         }
     }
 }
@@ -60,7 +72,7 @@ impl System {
                     .short("c")
                     .required(true)
                     .takes_value(true)
-                    .default_value("/etc/bioyino/bioyino.toml"),
+                    .default_value("/etc/bioconvo/bioconvo.toml"),
             )
             .arg(
                 Arg::with_name("verbosity")
@@ -100,5 +112,41 @@ impl System {
             system.verbosity = v.into()
         }
         system
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct Bucket {
+    /// time required to expire the bucket
+    timer: usize,
+
+    // /// lua function to call when bucket is ready
+    // end_function: String,
+    /// where to send this bucket data
+    routes: Vec<String>,
+}
+
+impl Default for Bucket {
+    fn default() -> Self {
+        Self {
+            timer: 30,
+            routes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct Backend {
+    /// time required to expire the bucket
+    pub address: SocketAddr,
+}
+
+impl Default for Backend {
+    fn default() -> Self {
+        Self {
+            address: "127.0.0.1:2003".parse().unwrap(),
+        }
     }
 }

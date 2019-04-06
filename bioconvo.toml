@@ -1,0 +1,9 @@
+[buckets.some]
+timer = 30
+routes = ["default"]
+
+[backends.backend1]
+address = "127.0.0.1:2004"
+
+[backends.backend2]
+address = "127.0.0.1:2005"

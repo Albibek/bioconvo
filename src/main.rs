@@ -2,14 +2,17 @@
 pub mod carbon;
 pub mod config;
 pub mod errors;
+pub mod funcs;
 pub mod util;
 pub mod worker;
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{self, Duration, Instant, SystemTime};
 
@@ -28,8 +31,9 @@ use tokio::timer::{Delay, Interval};
 //use crate::udp::{start_async_udp, start_sync_udp};
 use metric::metric::Metric;
 
-use crate::carbon::CarbonServer;
+use crate::carbon::{CarbonBackend, CarbonServer};
 use crate::config::System;
+
 //use crate::consul::ConsulConsensus;
 //use crate::errors::GeneralError;
 //use crate::management::{MgmtClient, MgmtServer};
@@ -53,6 +57,16 @@ pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 //pub static INGRESS_METRICS: AtomicUsize = ATOMIC_USIZE_INIT;
 //pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
 //pub static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
+use crossbeam::atomic::AtomicCell;
+use lazy_static::lazy_static;
+
+lazy_static! {
+    /// This is an example for using doc comment attributes
+    pub static ref BUCKETS: Arc<RwLock<HashMap<String, HashMap<String, Metric<Float>>>>> = {
+        Arc::new(RwLock::new(HashMap::new()))
+    };
+
+}
 
 fn main() {
     let config = System::load();
@@ -97,6 +111,8 @@ fn main() {
         //start_as_leader,
         //stats_prefix,
         //consensus,
+        code,
+        backends,
         ..
     } = config;
 
@@ -128,18 +144,41 @@ fn main() {
     //   let carbon_log = log.clone();
     // spawn carbon server
     let listen: SocketAddr = "127.0.0.1:2003".parse().unwrap();
-    let carbon = CarbonServer::new(listen.clone(), bufs_tx, log);
+    let carbon = CarbonServer::new(listen.clone(), bufs_tx, log.clone());
     runtime.spawn(carbon.into_future().map_err(|_| ())); // TODO: error
 
-    use crossbeam_channel::bounded;
+    use crossbeam::channel::bounded;
     let (work_tx, work_rx) = bounded(42); // TODO: option for queue length
 
+    let mut back_chans = HashMap::new();
+    // create backend senders
+    for (name, back_config) in backends {
+        let log = log.clone();
+        let (back_tx, back_rx) = futures::sync::mpsc::channel(42);
+        let backend = CarbonBackend::new(back_config.address, back_rx, log);
+        back_chans.insert(name, back_tx);
+        runtime.spawn(backend.into_future().map_err(|_| ()));
+    }
+
+    // read lua code from file
+    let mut lua_file = File::open(code).expect("opening lua file");
+    let mut lua_code = String::new();
+    lua_file
+        .read_to_string(&mut lua_code)
+        .expect("reading lua file");
+
+    let handle = runtime.handle();
     // spawn worker threads
     for _ in 0..n_threads {
         let work_rx = work_rx.clone();
+        let lua_code = lua_code.clone();
+        let back_chans = back_chans.clone();
+        let handle = handle.clone();
         // TODO builder
         thread::spawn(move || {
-            work_rx.iter().map(worker::task).last();
+            let mut runner =
+                worker::Worker::new(&lua_code, back_chans, handle).expect("creating LUA VM");
+            work_rx.iter().map(|buf| runner.run(buf)).last();
         });
     }
     drop(work_rx);
@@ -147,7 +186,7 @@ fn main() {
     // this is a thread curcuit-breaking the sync processing from async
     // it synchronously reads the receiving part of the async channel and
     // sends data to queue for processing
-    // this is the place where scheduling would come
+    // this is the place where scheduling would come in future
     thread::spawn(move || {
         //
         bufs_rx
@@ -155,7 +194,7 @@ fn main() {
             .map(|res| {
                 match res {
                     Ok(buf) => {
-                        work_tx.send(buf);
+                        work_tx.send(buf).unwrap();
                         true
                     }
                     Err(e) => {
@@ -164,7 +203,8 @@ fn main() {
                     }
                 }
             })
-            .take_while(|&res| res);
+            .take_while(|&res| res)
+            .last();
     });
 
     // Spawn future gatering bioconvo own stats

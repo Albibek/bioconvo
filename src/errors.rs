@@ -1,4 +1,5 @@
 use failure_derive::Fail;
+use luajit::state::ThreadStatus;
 use std::net::SocketAddr;
 
 #[derive(Fail, Debug)]
@@ -29,6 +30,12 @@ pub enum GeneralError {
 
     #[fail(display = "bad metric: {}", _0)]
     Parsing(&'static str),
+
+    #[fail(display = "lua: {:?}", _0)]
+    Lua(ThreadStatus),
+
+    #[fail(display = "lua runtime: {:?} {}", _0, _1)]
+    LuaRuntime(ThreadStatus, String),
 }
 
 impl From<std::io::Error> for GeneralError {

@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use failure::Error;
 use ftoa;
 use futures::stream;
-use futures::sync::mpsc::Sender;
+use futures::sync::mpsc::{Receiver, Sender};
 use futures::{Future, IntoFuture, Sink, Stream};
 use slog::{info, warn, Logger};
 use tokio::net::{TcpListener, TcpStream};
@@ -63,46 +64,23 @@ impl IntoFuture for CarbonServer {
     }
 }
 
-/*
-#[derive(Clone)]
+//#[derive(Clone)]
+//pub struct MetricBytes(Bytes, Bytes, Bytes);
+
+//#[derive(Clone)]
 pub struct CarbonBackend {
     addr: SocketAddr,
-    metrics: Arc<Vec<(Bytes, Bytes, Bytes)>>,
+    metrics: Receiver<(Bytes, Metric<Float>)>,
     log: Logger,
 }
 
 impl CarbonBackend {
     pub(crate) fn new(
         addr: SocketAddr,
-        ts: Duration,
-        metrics: Arc<Vec<(Bytes, Float)>>,
+        metrics: Receiver<(Bytes, Metric<Float>)>,
         log: Logger,
     ) -> Self {
-        let ts: Bytes = ts.as_secs().to_string().into();
-
-        let buf = BytesMut::with_capacity(metrics.len() * 200); // 200 is an approximate for full metric name + value
-        let (metrics, _) =
-            metrics
-                .iter()
-                .fold((Vec::new(), buf), |(mut acc, mut buf), (name, metric)| {
-                    let mut wr = buf.writer();
-                    let buf = match ftoa::write(&mut wr, *metric) {
-                        Ok(()) => {
-                            buf = wr.into_inner();
-                            let metric = buf.take().freeze();
-                            acc.push((name.clone(), metric, ts.clone()));
-                            buf
-                        }
-                        Err(_) => {
-                            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                            wr.into_inner()
-                        }
-                    };
-                    (acc, buf)
-                });
-        let metrics = Arc::new(metrics);
-        let self_ = Self { addr, metrics, log };
-        self_
+        Self { addr, metrics, log }
     }
 }
 
@@ -118,9 +96,8 @@ impl IntoFuture for CarbonBackend {
         let elog = log.clone();
         let future = conn.and_then(move |conn| {
             info!(log, "carbon backend sending metrics");
-            let writer = CarbonCodec::new().framed(conn);
-            let metric_stream = stream::iter_ok::<_, ()>(SharedIter::new(metrics));
-            metric_stream
+            let writer = CarbonEncoder.framed(conn);
+            metrics
                 .map_err(|_| GeneralError::CarbonBackend)
                 .forward(writer.sink_map_err(|_| GeneralError::CarbonBackend))
                 .map(move |_| info!(log, "carbon backend finished"))
@@ -133,28 +110,6 @@ impl IntoFuture for CarbonBackend {
         Box::new(future)
     }
 }
-
-pub struct SharedIter<T> {
-    inner: Arc<Vec<T>>,
-    current: usize,
-}
-
-impl<T> SharedIter<T> {
-    pub fn new(inner: Arc<Vec<T>>) -> Self {
-        Self { inner, current: 0 }
-    }
-}
-
-impl<T: Clone> Iterator for SharedIter<T> {
-    type Item = T;
-    fn next(&mut self) -> Option<T> {
-        let n = self.inner.get(self.current).map(|i| i.clone());
-        self.current += 1;
-        n
-    }
-}
-
-*/
 
 pub struct CarbonDecoder {
     metric: Metric<Float>,
@@ -246,18 +201,29 @@ impl Encoder for CarbonDecoder {
 pub struct CarbonEncoder;
 
 impl Encoder for CarbonEncoder {
-    type Item = (Bytes, Bytes, Bytes); // Metric name, value and timestamp
+    type Item = (Bytes, Metric<Float>); // Metric name, value and timestamp
     type Error = Error;
 
     fn encode(&mut self, m: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        let len = m.0.len() + 1 + m.1.len() + 1 + m.2.len() + 1;
-        buf.reserve(len);
+        buf.reserve(m.0.len() + 20 + 20); // FIXME: too long to count, just allocate 19 bytes for float and 19 for u64
         buf.put(m.0);
         buf.put(" ");
-        buf.put(m.1);
-        buf.put(" ");
-        buf.put(m.2);
-        buf.put("\n");
+
+        let mut wr = buf.writer();
+        ftoa::write(&mut wr, m.1.value).map_err(|_| GeneralError::CarbonBackend)?;
+        wr.write(&b" "[..]).unwrap();
+
+        itoa::write(&mut wr, m.1.timestamp.unwrap()).map_err(|_| GeneralError::CarbonBackend)?;
+        wr.write(&b"\n"[..]).unwrap();
+
+        // let len = m.0.len() + 1 + m.1.len() + 1 + m.2.len() + 1;
+        //buf.reserve(len);
+        //buf.put(m.0);
+        //buf.put(" ");
+        //buf.put(m.1);
+        //buf.put(" ");
+        //buf.put(m.2);
+        // buf.put("\n");
         Ok(())
     }
 }
@@ -296,6 +262,8 @@ mod tests {
         let server = CarbonServer::new(listen.clone(), bufs_tx, log);
         runtime.spawn(server.into_future().map_err(|_| ())); // error
         let receiver = bufs_rx.for_each(move |msg| {
+            //if bufs_rx != "qwer.asdf.zxcv1 20 "
+            //TODO correct test
             println!("RECV: {:?}", msg);
             Ok(())
         });

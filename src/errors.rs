@@ -16,6 +16,12 @@ pub enum GeneralError {
     #[fail(display = "Gave up connecting to {}", _0)]
     TcpOutOfTries(SocketAddr),
 
+    #[fail(display = "Could not parse address")]
+    AddressParse,
+
+    #[fail(display = "Could not resolve address")]
+    AddressResolve, // TODO add address
+
     #[fail(display = "Carbon server failure")]
     CarbonServer,
 

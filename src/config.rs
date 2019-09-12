@@ -82,7 +82,7 @@ impl System {
             )
             .subcommand(
                 SubCommand::with_name("query")
-                    .about("send a management command to running bioyino server")
+                    .about("send a management command to running server")
                     .arg(
                         Arg::with_name("host")
                             .short("h")
@@ -140,13 +140,15 @@ impl Default for Bucket {
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Backend {
     /// time required to expire the bucket
-    pub address: SocketAddr,
+    pub address: String,
+    pub port: u16,
 }
 
 impl Default for Backend {
     fn default() -> Self {
         Self {
-            address: "127.0.0.1:2003".parse().unwrap(),
+            address: "127.0.0.1".parse().unwrap(),
+            port: 2003u16,
         }
     }
 }

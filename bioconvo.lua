@@ -2,9 +2,10 @@ function handle(name, value, timestamp)
     log("name="..name.."; value="..value.."; timestamp="..timestamp)
 
     store("some", name, value, timestamp)
+ 
     if value % 2 == 1 then
-        return {"fuck"}
+        return {"backend1"}
     else
-        return {"socat"}
+        return {"backend2"}
     end
 end

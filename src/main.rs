@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{self, Duration, Instant, SystemTime};
@@ -27,12 +27,17 @@ use slog::warn;
 
 use tokio::runtime::current_thread::{spawn, Runtime};
 use tokio::timer::{Delay, Interval};
+use trust_dns_resolver::{
+    config::{ResolverConfig, ResolverOpts},
+    AsyncResolver,
+};
 
 //use crate::udp::{start_async_udp, start_sync_udp};
-use metric::metric::Metric;
+use bioyino_metric::metric::Metric;
 
 use crate::carbon::{CarbonBackend, CarbonServer};
 use crate::config::System;
+use crate::util::HostOrAddr;
 
 //use crate::consul::ConsulConsensus;
 //use crate::errors::GeneralError;
@@ -51,22 +56,21 @@ pub type Float = f64;
 //pub type Cache = HashMap<Bytes, Metric<Float>>;
 
 // statistic counters
-pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
+pub static PARSE_ERRORS: AtomicUsize = AtomicUsize::new(0);
+pub static PROCESSED_METRICS: AtomicUsize = AtomicUsize::new(0);
+pub static LUA_ERRORS: AtomicUsize = AtomicUsize::new(0);
+
 //pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 //pub static INGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
 //pub static INGRESS_METRICS: AtomicUsize = ATOMIC_USIZE_INIT;
 //pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
 //pub static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
-use crossbeam::atomic::AtomicCell;
-use lazy_static::lazy_static;
+//use lazy_static::lazy_static;
+use ccl::dhashmap::DHashMap;
+use once_cell::sync::Lazy;
 
-lazy_static! {
-    /// This is an example for using doc comment attributes
-    pub static ref BUCKETS: Arc<RwLock<HashMap<String, HashMap<String, Metric<Float>>>>> = {
-        Arc::new(RwLock::new(HashMap::new()))
-    };
-
-}
+pub static BUCKETS: Lazy<DHashMap<String, DHashMap<Bytes, Metric<Float>>>> =
+    Lazy::new(|| DHashMap::default());
 
 fn main() {
     let config = System::load();
@@ -134,14 +138,16 @@ fn main() {
     //let config = Arc::new(config);
     let log = rlog.new(o!("thread" => "main"));
 
-    // Init task options before initializing task threads
+    // create DNS resolver instance
+    let (resolver, resolver_task) =
+        AsyncResolver::from_system_conf().expect("configuring resolver from system config");
 
-    //let stats_prefix = stats_prefix.trim_right_matches(".").to_string();
-    // Start counting threads
+    runtime.spawn(resolver_task);
 
     // FIXME: unhardcode 100
     let (bufs_tx, bufs_rx) = mpsc::channel(100);
     //   let carbon_log = log.clone();
+
     // spawn carbon server
     let listen: SocketAddr = "127.0.0.1:2003".parse().unwrap();
     let carbon = CarbonServer::new(listen.clone(), bufs_tx, log.clone());
@@ -150,13 +156,18 @@ fn main() {
     use crossbeam::channel::bounded;
     let (work_tx, work_rx) = bounded(42); // TODO: option for queue length
 
+    //let mut back_chans: HashMap<Bytes, Sender<Arc<Metric<Float>>>> = HashMap::new();
     let mut back_chans = HashMap::new();
+
     // create backend senders
     for (name, back_config) in backends {
         let log = log.clone();
-        let (back_tx, back_rx) = futures::sync::mpsc::channel(42);
-        let backend = CarbonBackend::new(back_config.address, back_rx, log);
-        back_chans.insert(name, back_tx);
+        let (back_tx, back_rx) = futures::sync::mpsc::channel(42); // TODO think channel size
+        let backend_address = HostOrAddr::from_str(&back_config.address, resolver.clone()).expect(
+            &format!("parsing backend address `{}`", back_config.address),
+        );
+        let backend = CarbonBackend::new(backend_address, back_rx, log);
+        back_chans.insert(Bytes::from(name), back_tx);
         runtime.spawn(backend.into_future().map_err(|_| ()));
     }
 

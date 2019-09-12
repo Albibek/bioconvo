@@ -14,10 +14,12 @@ use slog::{info, warn, Logger};
 use tokio::net::{TcpListener, TcpStream};
 
 use tokio_codec::{Decoder, Encoder};
+use trust_dns_resolver::AsyncResolver;
 
 use crate::errors::GeneralError;
+use crate::util::HostOrAddr;
 use crate::Float;
-use metric::{Metric, MetricType};
+use bioyino_metric::{Metric, MetricType};
 
 #[derive(Clone)]
 pub struct CarbonServer {
@@ -69,30 +71,32 @@ impl IntoFuture for CarbonServer {
 
 //#[derive(Clone)]
 pub struct CarbonBackend {
-    addr: SocketAddr,
-    metrics: Receiver<(Bytes, Metric<Float>)>,
+    dest: HostOrAddr,
+    metrics: Receiver<(Bytes, Arc<Metric<Float>>)>,
     log: Logger,
 }
 
 impl CarbonBackend {
     pub(crate) fn new(
-        addr: SocketAddr,
-        metrics: Receiver<(Bytes, Metric<Float>)>,
+        dest: HostOrAddr,
+        metrics: Receiver<(Bytes, Arc<Metric<Float>>)>,
         log: Logger,
     ) -> Self {
-        Self { addr, metrics, log }
+        Self { dest, metrics, log }
     }
 }
 
 impl IntoFuture for CarbonBackend {
     type Item = ();
     type Error = GeneralError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self { addr, metrics, log } = self;
+        let Self { dest, metrics, log } = self;
 
-        let conn = TcpStream::connect(&addr).map_err(|e| GeneralError::Io(e));
+        let conn = dest
+            .resolve()
+            .and_then(|addr| TcpStream::connect(&addr).map_err(|e| GeneralError::Io(e)));
         let elog = log.clone();
         let future = conn.and_then(move |conn| {
             info!(log, "carbon backend sending metrics");
@@ -201,7 +205,7 @@ impl Encoder for CarbonDecoder {
 pub struct CarbonEncoder;
 
 impl Encoder for CarbonEncoder {
-    type Item = (Bytes, Metric<Float>); // Metric name, value and timestamp
+    type Item = (Bytes, Arc<Metric<Float>>); // Metric name, value and timestamp
     type Error = Error;
 
     fn encode(&mut self, m: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
@@ -250,7 +254,7 @@ mod tests {
     #[test]
     fn carbon_server() {
         let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
-        let ts: Bytes = ts.as_secs().to_string().into();
+        let ts = ts.as_secs(); //.to_string().into();
 
         let mut runtime = Runtime::new().expect("creating runtime for main thread");
         let (bufs_tx, bufs_rx) = channel(10);
@@ -273,9 +277,17 @@ mod tests {
         let sender = TcpStream::connect(&listen).and_then(move |conn| {
             let writer = CarbonEncoder.framed(conn);
             let sender = writer
-                .send(("qwer.asdf.zxcv1".into(), "10".into(), ts.clone()))
+                .send((
+                    "qwer.asdf.zxcv".into(),
+                    Arc::new(Metric::new(10f64, MetricType::Gauge(None), Some(ts), None).unwrap()),
+                ))
                 .and_then(move |writer| {
-                    writer.send(("qwer.asdf.zxcv2".into(), "20".into(), ts.clone()))
+                    writer.send((
+                        "qwer.asdf.zxcv2".into(),
+                        Arc::new(
+                            Metric::new(20f64, MetricType::Gauge(None), Some(ts), None).unwrap(),
+                        ),
+                    ))
                 })
                 .map(|_| ())
                 .map_err(|_| ());

@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use ccl::dhashmap::DHashMap;
+use log::error;
 use luajit::ffi::{self, lua_State};
 use luajit::{c_int, State};
 use std::cell::RefCell;
@@ -8,8 +9,8 @@ use std::collections::HashMap;
 use bioyino_metric::{Metric, MetricType};
 use std::sync::Arc;
 
+use crate::bucket::BUCKETS;
 use crate::util::show_buckets;
-use crate::BUCKETS;
 
 // Since lua-related functions need to have some static signature,
 // we need this global thread local state to handle additional information
@@ -70,14 +71,42 @@ pub unsafe extern "C" fn metric_value(l: *mut lua_State) -> c_int {
     let mut state = State::from_ptr(l);
     let value: f64 = LUA_THREAD_STATE.with(|state| {
         let state = state.borrow();
-        dbg!(state.metric.value);
+        //dbg!(state.metric.value);
         state.metric.value
     });
     state.push(value);
     1
 }
 
-pub unsafe extern "C" fn store(l: *mut lua_State) -> c_int {
+pub unsafe extern "C" fn metric_timestamp(l: *mut lua_State) -> c_int {
+    let mut state = State::from_ptr(l);
+    let value: u64 = LUA_THREAD_STATE.with(|state| {
+        let state = state.borrow();
+        //dbg!(state.metric.value);
+        state.metric.timestamp.unwrap()
+    });
+    state.push(value);
+    1
+}
+
+pub unsafe extern "C" fn forward(l: *mut lua_State) -> c_int {
+    let mut state = State::from_ptr(l);
+
+    let stack_size = ffi::lua_gettop(l); // thin ice here, unsafe functions can be called without unsafe block
+    if stack_size < 4 {
+        error!("store called with not enough arguments");
+        return -1;
+    }
+
+    let bucket_name: &str;
+    match state.to_str(-4) {
+        Some(s) => bucket_name = s,
+        None => error!("'forward' function received non-string argument"),
+    };
+    0
+}
+
+pub unsafe extern "C" fn aggregate(l: *mut lua_State) -> c_int {
     let mut state = State::from_ptr(l);
     let mut bucket_name: String = String::new();
     let mut name: Bytes = Bytes::new();
@@ -107,20 +136,7 @@ pub unsafe extern "C" fn store(l: *mut lua_State) -> c_int {
         None => println!("timestamp argument must be long"),
     }
 
-    let bucket = BUCKETS.get_or_insert_with(&bucket_name, || DHashMap::default());
-    match bucket.get_mut(&name) {
-        Some(metric) => {
-            //
-            println!("OLD");
-        }
-        None => {
-            bucket.insert(
-                name.clone(),
-                Metric::new(value, MetricType::Gauge(None), Some(timestamp), None).unwrap(), // TODO: unwrap
-            );
-        }
-    };
-    drop(bucket);
+    store_carbon(&name);
     show_buckets();
 
     0

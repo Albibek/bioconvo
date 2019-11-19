@@ -22,8 +22,8 @@ use trust_dns_resolver::{AsyncResolver, Name as DNSName};
 
 use bioyino_metric::{Metric, MetricType};
 
+use crate::bucket::BUCKETS;
 use crate::errors::GeneralError;
-use crate::BUCKETS;
 
 pub enum HostOrAddr {
     Host(DNSName, u16, AsyncResolver),

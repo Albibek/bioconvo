@@ -1,4 +1,5 @@
 // General
+pub mod bucket;
 pub mod carbon;
 pub mod config;
 pub mod errors;
@@ -33,7 +34,6 @@ use trust_dns_resolver::{
 };
 
 //use crate::udp::{start_async_udp, start_sync_udp};
-use bioyino_metric::metric::Metric;
 
 use crate::carbon::{CarbonBackend, CarbonServer};
 use crate::config::System;
@@ -60,18 +60,6 @@ pub static PARSE_ERRORS: AtomicUsize = AtomicUsize::new(0);
 pub static PROCESSED_METRICS: AtomicUsize = AtomicUsize::new(0);
 pub static LUA_ERRORS: AtomicUsize = AtomicUsize::new(0);
 
-//pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
-//pub static INGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
-//pub static INGRESS_METRICS: AtomicUsize = ATOMIC_USIZE_INIT;
-//pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
-//pub static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
-//use lazy_static::lazy_static;
-use ccl::dhashmap::DHashMap;
-use once_cell::sync::Lazy;
-
-pub static BUCKETS: Lazy<DHashMap<String, DHashMap<Bytes, Metric<Float>>>> =
-    Lazy::new(|| DHashMap::default());
-
 fn main() {
     let config = System::load();
 
@@ -80,34 +68,6 @@ fn main() {
         verbosity,
         //network: Network {
         listen,
-        //peer_listen,
-        //mgmt_listen,
-        //bufsize,
-        //multimessage,
-        //mm_packets,
-        //mm_async,
-        //mm_timeout,
-        //buffer_flush_time,
-        //buffer_flush_length: _,
-        //greens,
-        //async_sockets,
-        //nodes,
-        //snapshot_interval,
-        //},
-        //raft,
-        //consul: Consul { start_as: consul_start_as, agent, session_ttl: consul_session_ttl, renew_time: consul_renew_time, key_name: consul_key },
-        //metrics: Metrics {
-        ////           max_metrics,
-        //mut count_updates,
-        //update_counter_prefix,
-        //update_counter_suffix,
-        //update_counter_threshold,
-        //fast_aggregation,
-        //consistent_parsing: _,
-        //log_parse_errors: _,
-        //max_unparsed_buffer: _,
-        //},
-        //carbon,
         n_threads,
         //w_threads,
         //stats_interval: s_interval,
@@ -124,14 +84,14 @@ fn main() {
 
     let mut runtime = Runtime::new().expect("creating runtime for main thread");
 
-    //  let nodes = nodes.into_iter().map(|node| try_resolve(&node)).collect::<Vec<_>>();
-
     // Set logging
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
     let filter = slog::LevelFilter::new(drain, verbosity).fuse();
     let drain = slog_async::Async::new(filter).build().fuse();
     let rlog = slog::Logger::root(drain, o!("program"=>"bioconvo"));
+    slog_stdlog::init_with_level(log::Level::Debug); // TODO level from verbosity
+
     // this lets root logger live as long as it needs
     let _guard = slog_scope::set_global_logger(rlog.clone());
 

@@ -11,6 +11,7 @@ use clap::{
 };
 use toml;
 
+use crate::bucket::Bucket;
 use serde_derive::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,27 +113,6 @@ impl System {
             system.verbosity = v.into()
         }
         system
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub struct Bucket {
-    /// time required to expire the bucket
-    timer: usize,
-
-    // /// lua function to call when bucket is ready
-    // end_function: String,
-    /// where to send this bucket data
-    routes: Vec<String>,
-}
-
-impl Default for Bucket {
-    fn default() -> Self {
-        Self {
-            timer: 30,
-            routes: Vec::new(),
-        }
     }
 }
 

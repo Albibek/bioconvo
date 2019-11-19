@@ -33,9 +33,11 @@ impl Worker {
         let luaptr = unsafe { ffi::lua_open() };
         let mut state = State::from_ptr(luaptr);
         state.register("log", funcs::log);
-        state.register("store", funcs::store);
+        state.register("aggregate", funcs::aggregate);
+        state.register("forward", funcs::forward);
         state.register("m_name", funcs::metric_name);
         state.register("m_value", funcs::metric_value);
+        state.register("m_timestamp", funcs::metric_timestamp);
         match state.do_string(&code) {
             ThreadStatus::Ok => Ok(Self {
                 luaptr,
@@ -72,22 +74,40 @@ impl Worker {
             state.name = name.clone().freeze();
             state.metric = state_metric;
         });
+
+        let mut stackoff = 0;
         // push the error handler to the stack
         self.lua.push(funcs::error_handler as luajit::LuaFunction);
+        stackoff -= 1;
 
         // push the handler function
         // TODO: lua_gettop > 4 state.checkstack(4)
         self.lua.get_global("handle"); // TODO: configurable function name
+        stackoff -= 1;
+
         if self.is_nil() {
             return Err(GeneralError::LuaRuntime(
                 ThreadStatus::RuntimeError,
                 "handling function not found".into(),
             ));
         }
+
         let name = std::str::from_utf8(&name[..])
             .map_err(|_| GeneralError::Parsing("name is bad utf8"))?;
 
-        match self.lua.pcallx(3, 1, -5) {
+        /*
+        let r = unsafe { luajit::ffi::lua::lua_isfunction(self.luaptr, -1) };
+        dbg!(r);
+
+        let r = unsafe { luajit::ffi::lua::lua_isfunction(self.luaptr, -2) };
+        dbg!(r);
+
+        let r = self.lua.pcall(0, 1, -2);
+        dbg!(r);
+        */
+
+        // call handler with 0 arguments expecting 1 result
+        match self.lua.pcallx(0, 1, stackoff) {
             ThreadStatus::Ok => {
                 if self.is_table() {
                     //let mut routes: Vec<String> = Vec::new();
@@ -128,6 +148,9 @@ impl Worker {
                 }
 
                 // pop the return value
+                self.lua.pop(1);
+
+                // pop the error function
                 self.lua.pop(1);
                 // TODO count stats
                 Ok(())
@@ -197,7 +220,7 @@ mod tests {
     #[test]
     fn worker_lua() {
         let good_metric: BytesMut = "qwer.asdf.zxcv1 10.01 1554473358".into();
-        let good_metric: BytesMut = "qwer.asdf.zxcv1 10.01 1554473358".into();
+        //TODO bad_metric| let good_metric: BytesMut = "qwer.asdf.zxcv1 10.01 1554473358".into();
         let mut chans = HashMap::new();
         let (tx, rx) = channel(100);
         chans.insert(Bytes::from("fuck"), tx);
@@ -205,13 +228,14 @@ mod tests {
 
         let code = r#"
     function handle()
-        log("name="..m_name())
-        log("value="..m_value())
-    
-        local a = true
-        if value > 10 then
-           a = false
-        end
+        -- log("name="..m_name())
+        -- log("value="..m_value())
+        local name = m_name()
+        local value = m_value()
+        local timestamp = m_timestamp()
+
+        store("some", name, value, timestamp)
+
         return {"fuck"}
     end
 "#;
@@ -225,42 +249,45 @@ mod tests {
         println!("TIME: {:?}", now.elapsed());
     }
 
-    #[test]
-    fn worker_buckets() {
-        let good_metric: BytesMut = "qwer.asdf.zxcv1 10.01 1554473358".into();
-        let mut chans = HashMap::new();
-        let (tx, rx) = channel(100);
-        chans.insert("backend".into(), tx);
-        let mut runtime = Runtime::new().unwrap();
+    /*
+        #[test]
+        // DEPRECATED
+        fn worker_buckets() {
+            let good_metric: BytesMut = "qwer.asdf.zxcv1 10.01 1554473358".into();
+            let mut chans = HashMap::new();
+            let (tx, rx) = channel(100);
+            chans.insert("backend".into(), tx);
+            let mut runtime = Runtime::new().unwrap();
 
-        let code = r#"
-function handle(name, value, timestamp)
-    -- log("name="..name.."; value="..value.."; timestamp="..timestamp)
+            let code = r#"
+    function handle(name, value, timestamp)
+        -- log("name="..name.."; value="..value.."; timestamp="..timestamp)
 
-    store("some", name, value, timestamp)
+        store("some", name, value, timestamp)
 
-    return {"backend"}
-end
-"#;
-        let mut worker = Worker::new(code, chans, runtime.handle()).unwrap();
-        let reader_future = rx.for_each(|msg| {
-            //    println!("got {:?}", msg);
-            Ok(())
-        });
+        return {"backend"}
+    end
+    "#;
+            let mut worker = Worker::new(code, chans, runtime.handle()).unwrap();
+            let reader_future = rx.for_each(|msg| {
+                //    println!("got {:?}", msg);
+                Ok(())
+            });
 
-        let now = std::time::SystemTime::now();
-        for i in 0..1_000 {
-            if let Err(e) = worker.run(good_metric.clone()) {
-                println!("Err: {:?}", e);
-            } else {
-                println!("OK");
+            let now = std::time::SystemTime::now();
+            for i in 0..1_000 {
+                if let Err(e) = worker.run(good_metric.clone()) {
+                    println!("Err: {:?}", e);
+                } else {
+                    println!("OK");
+                }
             }
+            // we need this for tx to be dropped
+            drop(worker);
+
+            println!("TIME: {:?}", now.elapsed());
+
+            runtime.block_on(reader_future).unwrap();
         }
-        // we need this for tx to be dropped
-        drop(worker);
-
-        println!("TIME: {:?}", now.elapsed());
-
-        runtime.block_on(reader_future).unwrap();
-    }
+        */
 }
